@@ -1,0 +1,153 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      return signedIn() && userDoc().data.role == 'admin';
+    }
+
+    function isTeacher() {
+      return signedIn() && userDoc().data.role == 'teacher';
+    }
+
+    function isStudent() {
+      return signedIn() && userDoc().data.role == 'student';
+    }
+
+    function isTeacherOfGroup(groupId) {
+      return isTeacher() &&
+        get(/databases/$(database)/documents/groups/$(groupId)).data.teacherId == request.auth.uid;
+    }
+
+    function isStudentInGroup(groupId) {
+      return isStudent() && userDoc().data.groupId == groupId;
+    }
+
+    function teacherCanReadStudent() {
+      return isTeacher() && resource.data.role == 'student';
+    }
+
+    function studentCanReadStudents() {
+      return isStudent() && resource.data.role == 'student';
+    }
+
+    function teacherCanUpdateStudentGroup() {
+      return isTeacher() &&
+        resource.data.role == 'student' &&
+        request.resource.data.role == 'student' &&
+        request.resource.data.fullName == resource.data.fullName &&
+        request.resource.data.email == resource.data.email &&
+        (
+          request.resource.data.groupId == '' ||
+          isTeacherOfGroup(request.resource.data.groupId)
+        ) &&
+        (
+          resource.data.groupId == '' ||
+          isTeacherOfGroup(resource.data.groupId)
+        );
+    }
+
+    function teacherCanUpdateStudentPoints() {
+      return isTeacher() &&
+        resource.data.role == 'student' &&
+        request.resource.data.role == 'student' &&
+        request.resource.data.fullName == resource.data.fullName &&
+        request.resource.data.email == resource.data.email &&
+        request.resource.data.groupId == resource.data.groupId &&
+        isTeacherOfGroup(resource.data.groupId) &&
+        request.resource.data.totalPoints is number;
+    }
+
+    function teacherCanCreateStudent() {
+      return isTeacher() &&
+        request.resource.data.role == 'student' &&
+        request.resource.data.fullName is string &&
+        request.resource.data.email is string &&
+        request.resource.data.groupId is string &&
+        request.resource.data.totalPoints is number &&
+        isTeacherOfGroup(request.resource.data.groupId);
+    }
+
+    match /users/{userId} {
+      allow read: if isAdmin() ||
+        (signedIn() && request.auth.uid == userId) ||
+        teacherCanReadStudent() ||
+        studentCanReadStudents();
+      allow create: if isAdmin() || teacherCanCreateStudent();
+      allow update: if isAdmin() || teacherCanUpdateStudentGroup() || teacherCanUpdateStudentPoints();
+      allow delete: if false;
+    }
+
+    match /groups/{groupId} {
+      allow read: if isAdmin() || isTeacherOfGroup(groupId) || isStudentInGroup(groupId);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /lessons/{lessonId} {
+      allow read: if isAdmin() ||
+        isTeacherOfGroup(resource.data.groupId) ||
+        isStudentInGroup(resource.data.groupId);
+
+      allow create: if isAdmin() || isTeacherOfGroup(request.resource.data.groupId);
+      allow update, delete: if isAdmin() || isTeacherOfGroup(resource.data.groupId);
+    }
+
+    match /lessonScores/{scoreId} {
+      allow read: if isAdmin() ||
+        isTeacherOfGroup(resource.data.groupId) ||
+        (isStudent() && resource.data.studentId == request.auth.uid) ||
+        isStudentInGroup(resource.data.groupId);
+
+      allow create: if isAdmin() || isTeacherOfGroup(request.resource.data.groupId);
+      allow update, delete: if isAdmin() || isTeacherOfGroup(resource.data.groupId);
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if isAdmin() ||
+        (isStudent() && resource.data.studentId == request.auth.uid) ||
+        isTeacherOfGroup(resource.data.groupId);
+
+      allow create: if isAdmin() || isTeacherOfGroup(request.resource.data.groupId);
+      allow update: if isAdmin() || isTeacherOfGroup(resource.data.groupId);
+      allow delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isAdmin() ||
+        (isStudent() && resource.data.studentId == request.auth.uid) ||
+        isTeacherOfGroup(resource.data.groupId);
+
+      allow create: if isAdmin() || (
+        isTeacherOfGroup(request.resource.data.groupId) &&
+        request.resource.data.teacherId == request.auth.uid
+      );
+
+      allow update, delete: if isAdmin() || isTeacherOfGroup(resource.data.groupId);
+    }
+
+    match /shopSettings/{docId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /discountClaims/{claimId} {
+      allow read: if isAdmin() ||
+        (isStudent() && resource.data.studentId == request.auth.uid) ||
+        (isTeacher() && isTeacherOfGroup(get(/databases/$(database)/documents/users/$(resource.data.studentId)).data.groupId));
+
+      allow create: if isStudent() &&
+        request.resource.data.studentId == request.auth.uid &&
+        request.resource.data.status == 'pending';
+
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+  }
+}
